@@ -167,7 +167,6 @@ export const SimpleVideosPlayer = ({
       resolved = true;
       setVideosReady(true);
       onVideosReadyRef.current?.();
-      setIsPlaying(true);
     };
 
     const checkReady = () => {

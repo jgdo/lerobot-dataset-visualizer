@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { postParentMessageWithParams } from "@/utils/postParentMessage";
 import { SimpleVideosPlayer } from "@/components/simple-videos-player";
@@ -19,6 +20,12 @@ import OverviewPanel from "@/components/overview-panel";
 import Loading from "@/components/loading-component";
 import HfAuthButton from "@/components/hf-auth-button";
 import { EpisodeHeader, ThemeToggle } from "@/components/ui";
+import {
+  PolicyPanel,
+  POLICY_BACKEND_ENABLED,
+  withPredictedActions,
+  type PolicyResult,
+} from "@/components/policy-panel";
 import { useTheme } from "@/utils/theme";
 import { hasURDFSupport } from "@/lib/so101-robot";
 import {
@@ -411,6 +418,15 @@ function EpisodeViewerInner({
   } = data;
 
   const [videosReady, setVideosReady] = useState(!videosInfo.length);
+  const [policyResult, setPolicyResult] = useState<PolicyResult | null>(null);
+  const chartData = useMemo(
+    () =>
+      withPredictedActions(
+        chartDataGroups,
+        policyResult?.episode === episodeId ? policyResult : null,
+      ),
+    [chartDataGroups, policyResult, episodeId],
+  );
   const [chartsReady, setChartsReady] = useState(false);
 
   const loadStartRef = useRef(performance.now());
@@ -739,6 +755,13 @@ function EpisodeViewerInner({
       <UrlTimeSync />
       {/* Top tab bar */}
       <div className="relative z-30 flex items-center border-b border-line-subtle bg-[var(--surface-0)] shrink-0">
+        <Link
+          href="/"
+          title="Back to the dataset list"
+          className="shrink-0 whitespace-nowrap border-r border-line-subtle px-3 py-3 text-xs font-medium tracking-wide text-fg-muted transition-colors hover:text-fg lg:px-4"
+        >
+          ← Datasets
+        </Link>
         {renderTab("episodes", "Episodes")}
         {urdfSupported && renderTab("urdf", "3D Replay")}
         <AdvancedTabsMenu activeTab={activeTab} onSelect={handleTabChange} />
@@ -818,11 +841,19 @@ function EpisodeViewerInner({
               <div className="mb-4">
                 <Suspense fallback={null}>
                   <DataRecharts
-                    data={chartDataGroups}
+                    data={chartData}
                     onChartsReady={() => setChartsReady(true)}
                   />
                 </Suspense>
               </div>
+
+              {POLICY_BACKEND_ENABLED && (
+                <PolicyPanel
+                  repoId={datasetInfo.repoId}
+                  episodeId={episodeId}
+                  onResult={setPolicyResult}
+                />
+              )}
 
               <PlaybackBar />
             </>

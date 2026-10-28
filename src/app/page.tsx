@@ -48,9 +48,38 @@ const EXAMPLE_DATASETS = [
   "imstevenpmwork/thanos_picking_power_gem",
 ];
 
+// Set when DATASET_URL points at the local dataset route (`bun run dev:local`).
+const LOCAL_DATASET_URL = process.env.DATASET_URL?.includes("/api/local/")
+  ? process.env.DATASET_URL
+  : null;
+
 function HomeInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
+
+  const [localDatasets, setLocalDatasets] = useState<string[] | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!LOCAL_DATASET_URL) return;
+    fetch(`${LOCAL_DATASET_URL}/_/_/list`, { cache: "no-store" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+        return res.json();
+      })
+      .then((ids: string[]) => {
+        setLocalDatasets(ids);
+        if (ids.length === 0) {
+          setLocalError(
+            "No datasets found under LOCAL_LEROBOT_DATA_ROOT/datasets",
+          );
+        }
+      })
+      .catch((err) =>
+        setLocalError(
+          `Could not list local datasets from ${LOCAL_DATASET_URL}: ${err}`,
+        ),
+      );
+  }, []);
 
   // Handle redirects with useEffect instead of direct redirect
   useEffect(() => {
@@ -302,10 +331,13 @@ function HomeInner() {
           {/* Example Datasets */}
           <div className="mt-6 flex flex-col items-center gap-3">
             <p className="text-xs font-medium uppercase tracking-widest text-fg-faint">
-              Try an example
+              {LOCAL_DATASET_URL ? "Local datasets" : "Try an example"}
             </p>
             <div className="flex max-w-2xl flex-wrap justify-center gap-2">
-              {EXAMPLE_DATASETS.map((ds) => (
+              {(LOCAL_DATASET_URL
+                ? (localDatasets ?? [])
+                : EXAMPLE_DATASETS
+              ).map((ds) => (
                 <button
                   key={ds}
                   type="button"
@@ -316,6 +348,11 @@ function HomeInner() {
                 </button>
               ))}
             </div>
+            {LOCAL_DATASET_URL && localError && (
+              <p className="max-w-2xl text-center text-sm text-fg-muted">
+                {localError}
+              </p>
+            )}
             <a
               href="https://huggingface.co/datasets?library=library:lerobot"
               target="_blank"

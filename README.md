@@ -106,6 +106,26 @@ bun run format
   rewrite parquet shards / push to the Hub. When unset the tab is read/edit
   only with sessionStorage persistence.
 
+## Local datasets and policy evaluation
+
+Set `LOCAL_LEROBOT_DATA_ROOT` and optionally `POLICY_PYTHON` in a local `.env`
+file (see `.env.example`; `.env` is git-ignored).
+`bun run dev:local` (see `scripts/dev-local.sh`) reads everything from
+`LOCAL_LEROBOT_DATA_ROOT`, read-only and instead of the Hub: LeRobot datasets
+from `datasets/<org>/<dataset>` and trained policies from
+`train/<run>/checkpoints/last/pretrained_model`. It also starts
+`backend/policy_server.py` with `POLICY_PYTHON` (a Python that has `lerobot`
+and `torch` installed). In the episode view, **Run trained policy** then runs
+the selected training run's latest checkpoint over the whole episode on the
+GPU and charts
+the predicted actions as a "predicted" group in the episode chart, next to
+the recorded ones, with per-joint error stats in the policy panel.
+"Actions used per chunk" = N queries the policy every N frames and uses the
+first N actions of each predicted chunk. "Input remapping" picks which policy
+input each dataset observation stream feeds (e.g. `observation.images.kinect`
+→ `observation.images.camera1`); it starts from the `rename_map` the
+checkpoint was trained with, else from matching names.
+
 ## Annotations backend (optional)
 
 The Annotations tab edits LeRobot v3.1 language atoms — `language_persistent`

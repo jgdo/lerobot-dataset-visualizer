@@ -129,7 +129,7 @@ function mergeGroups(data: ChartRow[][]): ChartRow[] {
 export const DataRecharts = React.memo(
   ({ data, onChartsReady }: DataGraphProps) => {
     const [hoverStore] = useState(createHoverStore);
-    const [expanded, setExpanded] = useState(false);
+    const [expanded, setExpanded] = useState(true);
 
     useEffect(() => {
       if (typeof onChartsReady === "function") onChartsReady();
@@ -293,7 +293,7 @@ function ChartLegend({
                       className={`text-xs font-mono tabular-nums ml-1 ${visibleKeys.includes(key) ? "text-accent-fg/80" : "text-fg-faint"}`}
                     >
                       {typeof currentData[key] === "number"
-                        ? currentData[key].toFixed(2)
+                        ? currentData[key].toFixed(4)
                         : "–"}
                     </span>
                   </label>
@@ -326,7 +326,7 @@ function ChartLegend({
               className={`text-xs font-mono tabular-nums ml-1 ${visibleKeys.includes(key) ? "text-accent-fg/80" : "text-fg-faint"}`}
             >
               {typeof currentData[key] === "number"
-                ? currentData[key].toFixed(2)
+                ? currentData[key].toFixed(4)
                 : "–"}
             </span>
           </label>
