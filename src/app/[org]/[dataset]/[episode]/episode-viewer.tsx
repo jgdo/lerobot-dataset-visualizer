@@ -26,6 +26,12 @@ import {
   withPredictedActions,
   type PolicyResult,
 } from "@/components/policy-panel";
+import {
+  nearestFrame,
+  TargetAnnotationsPanel,
+  targetMarkers,
+  useTargetFile,
+} from "@/components/target-annotations";
 import { useTheme } from "@/utils/theme";
 import { hasURDFSupport } from "@/lib/so101-robot";
 import {
@@ -429,6 +435,37 @@ function EpisodeViewerInner({
   );
   const [chartsReady, setChartsReady] = useState(false);
 
+  const { file: targetFile, setFile: setTargetFile } = useTargetFile(
+    datasetInfo.repoId,
+    POLICY_BACKEND_ENABLED,
+  );
+  /// Chart row times: the chart stretches timestamps over the video segment,
+  /// so a frame's position on the chart is its row's timestamp.
+  const chartTimestamps = useMemo(
+    () => (chartDataGroups[0] ?? []).map((row) => Number(row.timestamp)),
+    [chartDataGroups],
+  );
+  const chartMarkers = useMemo(
+    () =>
+      targetMarkers(
+        targetFile?.episodes[String(episodeId)]?.targets ?? [],
+        chartTimestamps,
+      ),
+    [targetFile, episodeId, chartTimestamps],
+  );
+  const targetCounts = useMemo(
+    () =>
+      targetFile
+        ? Object.fromEntries(
+            Object.entries(targetFile.episodes).map(([ep, v]) => [
+              Number(ep),
+              v.targets.length,
+            ]),
+          )
+        : undefined,
+    [targetFile],
+  );
+
   const loadStartRef = useRef(performance.now());
 
   const router = useRouter();
@@ -618,7 +655,9 @@ function EpisodeViewerInner({
   // Not `useTime()`: any consumer of it re-renders on every playback tick,
   // which would redraw this whole component ~12×/s. <UrlTimeSync /> handles
   // the one thing here that needs `currentTime` (the ?t= URL writer).
-  const { seek, setIsPlaying } = useTimeControls();
+  const { seek, setIsPlaying, subscribe } = useTimeControls();
+  const timeRef = useRef(0);
+  useEffect(() => subscribe((t) => (timeRef.current = t)), [subscribe]);
   /// Passed to the embedded lerobot-doctor Space, which follows `__theme` like any HF Space.
   const theme = useTheme();
 
@@ -670,8 +709,20 @@ function EpisodeViewerInner({
   // detach + reattach the listener each time. Now the listener attaches
   // once and reads the latest state via the ref.
   // Vercel rule: advanced-event-handler-refs.
-  const keyStateRef = useRef({ activeTab, episodeId, episodes, urdfEpisode });
-  keyStateRef.current = { activeTab, episodeId, episodes, urdfEpisode };
+  const keyStateRef = useRef({
+    activeTab,
+    episodeId,
+    episodes,
+    urdfEpisode,
+    chartTimestamps,
+  });
+  keyStateRef.current = {
+    activeTab,
+    episodeId,
+    episodes,
+    urdfEpisode,
+    chartTimestamps,
+  };
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -711,13 +762,26 @@ function EpisodeViewerInner({
             router.push(`./episode_${nextEpisodeId}`);
           }
         }
+      } else if (key === "ArrowLeft" || key === "ArrowRight") {
+        // Step one frame in the episode chart view (pauses playback).
+        const ts = s.chartTimestamps;
+        if (inTextEntry || s.activeTab !== "episodes" || !ts.length) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        e.preventDefault();
+        setIsPlaying(false);
+        const frame = nearestFrame(ts, timeRef.current);
+        const next = Math.min(
+          ts.length - 1,
+          Math.max(0, frame + (key === "ArrowRight" ? 1 : -1)),
+        );
+        seek(ts[next]);
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // router / setIsPlaying are stable; the rest is read via keyStateRef.
-  }, [router, setIsPlaying]);
+    // router / setIsPlaying / seek are stable; the rest is read via keyStateRef.
+  }, [router, setIsPlaying, seek]);
 
   // Pagination functions
   const nextPage = () => {
@@ -787,6 +851,7 @@ function EpisodeViewerInner({
             nextPage={nextPage}
             showFlaggedOnly={sidebarFlaggedOnly}
             onShowFlaggedOnlyChange={setSidebarFlaggedOnly}
+            targetCounts={targetCounts}
             onEpisodeSelect={
               activeTab === "urdf"
                 ? (ep) => {
@@ -813,13 +878,29 @@ function EpisodeViewerInner({
                 episodeId={episodeId}
               />
 
-              {/* Videos */}
-              {videosInfo.length > 0 && (
-                <SimpleVideosPlayer
-                  videosInfo={videosInfo}
-                  onVideosReady={() => setVideosReady(true)}
-                />
-              )}
+              {/* Videos, with the target annotations to their right (below on narrow screens) */}
+              <div className="flex flex-wrap items-start gap-4">
+                {videosInfo.length > 0 && (
+                  <div className="min-w-0 flex-[1_1_24rem]">
+                    <SimpleVideosPlayer
+                      videosInfo={videosInfo}
+                      onVideosReady={() => setVideosReady(true)}
+                      fps={datasetInfo.fps}
+                    />
+                  </div>
+                )}
+                {POLICY_BACKEND_ENABLED && (
+                  <div className="min-w-[22rem] flex-[0_1_34rem]">
+                    <TargetAnnotationsPanel
+                      repoId={datasetInfo.repoId}
+                      episodeId={episodeId}
+                      timestamps={chartTimestamps}
+                      file={targetFile}
+                      onFile={setTargetFile}
+                    />
+                  </div>
+                )}
+              </div>
 
               {/* Language Instruction */}
               {task && (
@@ -842,6 +923,7 @@ function EpisodeViewerInner({
                 <Suspense fallback={null}>
                   <DataRecharts
                     data={chartData}
+                    markers={chartMarkers}
                     onChartsReady={() => setChartsReady(true)}
                   />
                 </Suspense>
@@ -877,6 +959,7 @@ function EpisodeViewerInner({
                     <SimpleVideosPlayer
                       videosInfo={videosInfo}
                       onVideosReady={() => setVideosReady(true)}
+                      fps={datasetInfo.fps}
                     />
                   </div>
                 )}

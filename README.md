@@ -126,6 +126,61 @@ input each dataset observation stream feeds (e.g. `observation.images.kinect`
 → `observation.images.camera1`); it starts from the `rename_map` the
 checkpoint was trained with, else from matching names.
 
+**Train policies** on the start page opens `/training`: it lists every run
+under `train/` with the dataset it was trained on, and queues new ACT, SmolVLA
+or pi0-fast trainings (`lerobot-train`, `push_to_hub` and wandb off) that run
+one after another into `train/<name>`. The default name is
+`<type>_<org>_<dataset>_<DDMMYYYY>_<HHMMSS>`. Each running job shows its
+progress, loss curve and estimated finish time; queued jobs can be cancelled
+and running ones stopped, keeping or deleting their checkpoints. The queue is
+stored in `train/.visualizer/` and trainings run as separate processes, so
+both survive a restart of `dev:local`. SmolVLA and pi0-fast fine-tune their
+Hub base models, which are downloaded on first use; pi0-fast also needs access
+to the gated `google/paligemma-3b-pt-224`.
+
+Image augmentation has two separate switches. **Color augmentation** randomly
+changes brightness, contrast, saturation, hue and sharpness. **Position
+augmentation** randomly rotates (±5°) and shifts (±5%) the image. Both use
+LeRobot's default transforms; each frame gets up to 3 of the enabled ones.
+For `target_reach` the augmentation runs batched on the GPU after the images
+are scaled to 240×320, instead of on full-size frames in the data loader
+workers (with 4 workers this makes batch loading about 4× faster).
+
+**Upload to Hugging Face.** Only on request: tick **Upload to Hugging Face
+when done** in the New training form, or press **Upload** next to a trained
+policy. The last checkpoint's `pretrained_model` files (weights, configs,
+processors) and a generated model card go to the given model repository
+(default `<user>/<run name>`, private by default); the dataset is never
+uploaded. The login comes from `hf auth login` or `HF_TOKEN` on the machine
+running the visualizer. `VISUALIZER_HF_DRY_RUN=1` does everything except
+contacting the Hub, for testing.
+
+**Target frames.** The episode view has a **Target annotations** panel for
+marking target frames. Each target has a type (`lin`, `circ` or `coll`) and a
+tag from an editable, dataset-wide list.
+
+- Keys: `t` adds a target at the current frame; `[` and `]` jump to the
+  previous and next target.
+- Each tag can be used at most once per episode.
+- Removing a tag (after a confirmation) also deletes every target that uses it.
+- Targets are drawn as markers in the chart, and the sidebar counts them per
+  episode.
+- They are stored next to the dataset, never inside it, in
+  `annotations/<org>/<dataset>/targets.json`.
+
+**Target reach policy.** The `/training` page also offers **Target reach**, a
+plugin policy from `../lerobot_policy_target_reach`. Install it into the
+`POLICY_PYTHON` environment with `pip install -e`.
+
+- Model: a frozen ImageNet ResNet18 plus the joint state feed a small MLP
+  (about 400k trainable parameters), which predicts the joint pose at the
+  episode's target frame for the selected tag.
+- Training data: frames `0…t` of each episode that has the tag, where `t` is
+  the tagged frame. Episodes without the tag are skipped. A filtered sampler
+  makes every batch sample usable, and color and position augmentation still
+  apply.
+- The default run name includes the tag.
+
 ## Annotations backend (optional)
 
 The Annotations tab edits LeRobot v3.1 language atoms — `language_persistent`

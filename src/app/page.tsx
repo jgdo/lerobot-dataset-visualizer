@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback, Suspense } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSearchParams } from "next/navigation";
 import { authHeaders } from "@/utils/auth";
@@ -352,6 +353,14 @@ function HomeInner() {
               <p className="max-w-2xl text-center text-sm text-fg-muted">
                 {localError}
               </p>
+            )}
+            {process.env.POLICY_BACKEND_ENABLED && (
+              <Link
+                href="/training"
+                className="btn btn-primary mt-2 px-4 py-1.5 text-sm"
+              >
+                Train policies →
+              </Link>
             )}
             <a
               href="https://huggingface.co/datasets?library=library:lerobot"

@@ -17,6 +17,8 @@ interface SidebarProps {
   showFlaggedOnly: boolean;
   onShowFlaggedOnlyChange: (v: boolean) => void;
   onEpisodeSelect?: (ep: number) => void;
+  /// Target annotations per episode (absent without the policy backend).
+  targetCounts?: Record<number, number>;
 }
 
 const COLLAPSED_KEY = "lerobot-viz-sidebar-collapsed";
@@ -67,6 +69,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   showFlaggedOnly,
   onShowFlaggedOnlyChange,
   onEpisodeSelect,
+  targetCounts,
 }) => {
   const isSmall = useIsSmallScreen();
   // Desktop remembers whether the list was collapsed; on a small screen the
@@ -175,6 +178,20 @@ const Sidebar: React.FC<SidebarProps> = ({
                 FPS
               </dt>
               <dd className="text-fg">{datasetInfo.fps}</dd>
+              {targetCounts && (
+                <>
+                  <dt
+                    className="uppercase tracking-wide text-[10px] text-fg-faint"
+                    title="Episodes with target annotations"
+                  >
+                    Targets
+                  </dt>
+                  <dd className="text-fg">
+                    {Object.keys(targetCounts).length}/
+                    {datasetInfo.total_episodes.toLocaleString()} episodes
+                  </dd>
+                </>
+              )}
             </dl>
             <button
               onClick={() => setOpenAndRemember(false)}
@@ -222,6 +239,14 @@ const Sidebar: React.FC<SidebarProps> = ({
                         className="flex-1 text-left"
                       >
                         Episode {episode}
+                        {targetCounts?.[episode] ? (
+                          <span
+                            className="ml-2 text-[10px] text-fg-faint"
+                            title="Target annotations"
+                          >
+                            ◎{targetCounts[episode]}
+                          </span>
+                        ) : null}
                       </button>
                       <button
                         onClick={() => toggle(episode)}
@@ -243,6 +268,14 @@ const Sidebar: React.FC<SidebarProps> = ({
                         className="flex-1 text-left"
                       >
                         Episode {episode}
+                        {targetCounts?.[episode] ? (
+                          <span
+                            className="ml-2 text-[10px] text-fg-faint"
+                            title="Target annotations"
+                          >
+                            ◎{targetCounts[episode]}
+                          </span>
+                        ) : null}
                       </Link>
                       <button
                         onClick={() => toggle(episode)}

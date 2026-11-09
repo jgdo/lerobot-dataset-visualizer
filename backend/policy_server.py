@@ -13,7 +13,13 @@ Everything is read from ``$LOCAL_LEROBOT_DATA_ROOT``:
 - datasets from ``datasets/<org>/<dataset>``
 - policies from ``train/<run>/checkpoints/last/pretrained_model``
 
-Nothing is downloaded (``HF_HUB_OFFLINE=1``) or written.
+Evaluation downloads nothing (``HF_HUB_OFFLINE=1``) and writes nothing. The
+training queue (``/api/policy/train/*``, see ``training.py``) writes new runs
+to ``train/`` and may download base models. Trained policies are uploaded to
+the Hub only on request (``/api/policy/train/uploads``, see ``hf_upload.py``);
+datasets are never uploaded. Target annotations
+(``/api/policy/annotations/*``, see ``target_annotations.py``) are written to
+``annotations/<org>/<dataset>/targets.json``, never into the dataset.
 
 Only the Python standard library is used for HTTP, so this runs in any Python
 environment that has ``lerobot`` and ``torch`` installed:
@@ -36,6 +42,10 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+from hf_upload import UploadManager
+from target_annotations import TargetAnnotations
+from training import POLICY_TYPES, TrainingManager
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
@@ -80,6 +90,66 @@ def list_policies() -> list[dict]:
     return out
 
 
+def list_runs() -> list[dict]:
+    """All training runs under train/, with the dataset each was trained on."""
+    out = []
+    root = train_root()
+    for run in sorted(root.iterdir() if root.is_dir() else [], key=lambda p: p.name):
+        if run.name.startswith(".") or not run.is_dir():
+            continue
+        ckpts = run / "checkpoints"
+        last = ckpts / "last"
+        names = sorted(p.name for p in ckpts.iterdir() if p.name != "last") if ckpts.is_dir() else []
+        cfg_dir = last / "pretrained_model" if last.exists() else None
+        if cfg_dir is None and names:
+            cfg_dir = ckpts / names[-1] / "pretrained_model"
+        train_cfg = {}
+        if cfg_dir is not None:
+            try:
+                train_cfg = json.loads((cfg_dir / "train_config.json").read_text())
+            except (OSError, ValueError):
+                pass
+        out.append(
+            {
+                "name": run.name,
+                "type": (train_cfg.get("policy") or {}).get("type"),
+                "dataset": (train_cfg.get("dataset") or {}).get("repo_id"),
+                "steps": train_cfg.get("steps"),
+                "checkpoint": last.resolve().name if last.exists() else None,
+                "checkpoints": names,
+                "has_policy": is_policy_dir(checkpoint_dir(run.name)),
+                "modified": run.stat().st_mtime,
+            }
+        )
+    return out
+
+
+def list_datasets() -> list[dict]:
+    """Local datasets (datasets/<org>/<name>) with their cameras."""
+    out = []
+    root = dataset_root()
+    for info_file in sorted(root.glob("*/*/meta/info.json")):
+        try:
+            info = json.loads(info_file.read_text())
+        except (OSError, ValueError):
+            continue
+        ds = info_file.parent.parent
+        out.append(
+            {
+                "repo_id": f"{ds.parent.name}/{ds.name}",
+                "cameras": [
+                    k
+                    for k, f in info.get("features", {}).items()
+                    if f.get("dtype") in ("video", "image")
+                ],
+                "episodes": info.get("total_episodes"),
+                "frames": info.get("total_frames"),
+                "fps": info.get("fps"),
+            }
+        )
+    return out
+
+
 def policy_dir(run: str) -> Path:
     """Checkpoint folder of a listed training run; rejects anything else."""
     if run not in {p["name"] for p in list_policies()}:
@@ -101,7 +171,9 @@ def load_policy(policy_path: str) -> dict:
     import torch
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.factory import get_policy_class, make_pre_post_processors
+    from lerobot.utils.import_utils import register_third_party_plugins
 
+    register_third_party_plugins()  # plugin policies such as target_reach
     path = str(Path(policy_path).resolve())
     if _loaded and _loaded["path"] == path:
         return _loaded
@@ -122,6 +194,32 @@ def load_policy(policy_path: str) -> dict:
     )
     _loaded = {"path": path, "policy": policy, "cfg": cfg, "pre": pre, "post": post}
     return _loaded
+
+
+def release_policy() -> None:
+    """Frees the GPU memory of the evaluation policy unless it is in use."""
+    global _loaded
+    if not _policy_lock.acquire(blocking=False):
+        return
+    try:
+        if _loaded:
+            import torch
+
+            _loaded = None
+            torch.cuda.empty_cache()
+    finally:
+        _policy_lock.release()
+
+
+targets = TargetAnnotations(data_root, lambda repo_id: dataset_dir(repo_id))
+training = TrainingManager(
+    train_root,
+    lambda repo_id: dataset_dir(repo_id),
+    before_start=release_policy,
+    annotations=targets,
+    after_done=lambda job: uploads.start(job["name"], **job["upload"], job_id=job["id"]),
+)
+uploads = UploadManager(training.state_dir, policy_dir)
 
 
 def saved_rename_map(policy_path: Path) -> dict[str, str]:
@@ -168,6 +266,7 @@ def policy_summary(policy_path: str, repo_id: str | None = None) -> dict:
     }
     if repo_id:
         out["dataset_observation_keys"] = dataset_observation_keys(repo_id)
+    out["training_active"] = training.active()
     return out
 
 
@@ -347,13 +446,21 @@ def _run_job_locked(job: Job) -> None:
     if not names or len(names) != action_dim:
         names = [str(i) for i in range(action_dim)]
 
+    # What the prediction is compared with: the recorded action of the same
+    # frame, or for target_reach the pose at the episode's tagged target frame.
+    reference, target = recorded, None
+    if cfg.type == "target_reach":
+        target = target_reference(repo_id, episode, cfg, cols, n)
+        reference = target["pose"]
+    compared = [i for i in range(n) if reference[i] is not None]
+
     per_joint = []
-    for d in range(action_dim):
-        errs = [predicted[i][d] - recorded[i][d] for i in range(n)]
-        mae = sum(abs(e) for e in errs) / n
-        rmse = math.sqrt(sum(e * e for e in errs) / n)
+    for d in range(action_dim if compared else 0):
+        errs = [predicted[i][d] - reference[i][d] for i in compared]
+        mae = sum(abs(e) for e in errs) / len(errs)
+        rmse = math.sqrt(sum(e * e for e in errs) / len(errs))
         max_abs = max(abs(e) for e in errs)
-        rec = [recorded[i][d] for i in range(n)]
+        rec = [recorded[i][d] for i in compared]
         per_joint.append(
             {
                 "name": names[d],
@@ -379,7 +486,34 @@ def _run_job_locked(job: Job) -> None:
         "recorded": recorded,
         "predicted": predicted,
         "per_joint": per_joint,
+        "target": target,
     }
+
+
+def target_reference(repo_id: str, episode: int, cfg, cols, n: int) -> dict:
+    """Per-frame target pose of a target_reach policy for one episode.
+
+    Uses the dataset's current annotations for the tag the policy was trained
+    on: frames 0..t get the pose (``cfg.target_key``) at the tagged frame t,
+    later frames None, like in training. No tag in the episode: all None.
+    """
+    tag, key = cfg.target_tag, cfg.target_key
+    data = targets.load(repo_id)
+    frame = next(
+        (
+            t["frame"]
+            for t in data["episodes"].get(str(episode), {}).get("targets", [])
+            if t["tag"] == tag
+        ),
+        None,
+    )
+    pose: list = [None] * n
+    if frame is not None:
+        if frame >= n:
+            raise ValueError(f"target frame {frame} is outside the episode ({n} frames)")
+        value = [float(x) for x in cols[key][frame]]
+        pose[: frame + 1] = [value] * (frame + 1)
+    return {"tag": tag, "key": key, "frame": frame, "pose": pose}
 
 
 # --------------------------------------------------------------------------
@@ -417,6 +551,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True})
             if url.path == "/api/policy/policies":
                 return self._json(200, list_policies())
+            if url.path == "/api/policy/train/options":
+                types = [{"type": k, **v} for k, v in POLICY_TYPES.items()]
+                return self._json(200, {"types": types, "datasets": list_datasets()})
+            if url.path == "/api/policy/train/runs":
+                return self._json(200, list_runs())
+            if url.path == "/api/policy/train/jobs":
+                return self._json(200, training.snapshot())
+            if url.path == "/api/policy/train/hf":
+                return self._json(200, uploads.account())
+            if url.path == "/api/policy/train/uploads":
+                return self._json(200, uploads.snapshot())
+            if url.path == "/api/policy/train/name":
+                return self._json(200, {"problem": training.name_problem(q.get("name", ""))})
+            if url.path == "/api/policy/annotations/targets":
+                return self._json(200, targets.snapshot(q.get("repo_id", "")))
+            if url.path == "/api/policy/annotations/tags/usage":
+                return self._json(200, targets.tag_usage(q.get("repo_id", ""), q.get("tag", "")))
             if url.path == "/api/policy/info":
                 try:
                     path = policy_dir(q.get("policy", ""))
@@ -432,8 +583,64 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             return self._json(500, {"error": str(e)})
 
+    def do_PUT(self):
+        url = urlparse(self.path)
+        q = {k: v[0] for k, v in parse_qs(url.query).items()}
+        if url.path != "/api/policy/annotations/targets":
+            return self._json(404, {"error": "not found"})
+        try:
+            body = self._body()
+            episode = int(q.get("episode", ""))
+            return self._json(
+                200, targets.set_episode(q.get("repo_id", ""), episode, list(body["targets"]))
+            )
+        except FileNotFoundError as e:
+            return self._json(404, {"error": str(e)})
+        except (ValueError, KeyError, TypeError) as e:
+            return self._json(400, {"error": str(e)})
+
     def do_POST(self):
-        if urlparse(self.path).path != "/api/policy/jobs":
+        url = urlparse(self.path)
+        parts = url.path.rstrip("/").split("/")
+        if url.path == "/api/policy/annotations/tags":
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            try:
+                body = self._body()
+                repo_id = q.get("repo_id", "")
+                if "add" in body:
+                    return self._json(200, targets.add_tag(repo_id, str(body["add"]).strip()))
+                if "remove" in body:
+                    return self._json(200, targets.remove_tag(repo_id, str(body["remove"])))
+                return self._json(400, {"error": "expected add or remove"})
+            except FileNotFoundError as e:
+                return self._json(404, {"error": str(e)})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+        if url.path == "/api/policy/train/uploads":
+            try:
+                body = self._body()
+                up = uploads.start(
+                    str(body.get("run", "")), str(body.get("repo_id") or ""), bool(body.get("private", True))
+                )
+                return self._json(200, up)
+            except FileNotFoundError as e:
+                return self._json(404, {"error": str(e)})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+        if parts[3:5] == ["train", "jobs"]:
+            try:
+                body = self._body()
+                if len(parts) == 5:
+                    return self._json(200, training.enqueue(body))
+                if len(parts) == 7 and parts[6] == "stop":
+                    training.stop(parts[5], str(body.get("mode", "")))
+                    return self._json(200, {"ok": True})
+            except KeyError:
+                return self._json(404, {"error": "unknown training job"})
+            except (ValueError, FileNotFoundError) as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(404, {"error": "not found"})
+        if url.path != "/api/policy/jobs":
             return self._json(404, {"error": "not found"})
         try:
             body = self._body()
@@ -466,6 +673,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parts = urlparse(self.path).path.rstrip("/").split("/")
+        if len(parts) == 6 and parts[3:5] == ["train", "jobs"]:
+            try:
+                training.cancel(parts[5])
+            except KeyError:
+                return self._json(404, {"error": "unknown training job"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, {"ok": True})
+        if len(parts) == 6 and parts[3:5] == ["train", "uploads"]:
+            try:
+                uploads.dismiss(parts[5])
+            except KeyError:
+                return self._json(404, {"error": "unknown upload"})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, {"ok": True})
         if len(parts) == 5 and parts[3] == "jobs" and parts[4] in _jobs:
             _jobs[parts[4]].cancel_event.set()
             return self._json(200, {"ok": True})
@@ -478,6 +701,7 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=7862)
     args = ap.parse_args()
     data_root()  # fail early if unset
+    training.start()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"policy server on http://{args.host}:{args.port} (data: {data_root()})")
     server.serve_forever()

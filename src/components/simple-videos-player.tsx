@@ -32,6 +32,8 @@ const SUPPORTS_RVFC =
 type VideoPlayerProps = {
   videosInfo: VideoInfo[];
   onVideosReady?: () => void;
+  /** Dataset fps; lets a paused seek show exactly the frame nearest to the time. */
+  fps?: number;
 };
 
 const videoEventCleanup = new WeakMap<HTMLVideoElement, () => void>();
@@ -39,6 +41,7 @@ const videoEventCleanup = new WeakMap<HTMLVideoElement, () => void>();
 export const SimpleVideosPlayer = ({
   videosInfo,
   onVideosReady,
+  fps,
 }: VideoPlayerProps) => {
   const { currentTime, seek, externalSeekVersion, isPlaying, setIsPlaying } =
     useTime();
@@ -420,11 +423,20 @@ export const SimpleVideosPlayer = ({
       if (hiddenSet.has(videosInfo[index].filename)) return;
 
       const info = videosInfo[index];
-      let targetTime = currentTime;
-      if (info.isSegmented) {
-        targetTime = (info.segmentStart ?? 0) + currentTime;
+      const start = info.isSegmented ? (info.segmentStart ?? 0) : 0;
+
+      if (!isPlaying && fps) {
+        // Paused (frame stepping, chart clicks): always seek, to the middle of
+        // the frame nearest to the time — the frame whose values the chart
+        // shows. Seeking to a frame's exact start can land on the previous
+        // frame through rounding, and the tolerance below would skip
+        // single-frame steps entirely.
+        const frame = Math.max(0, Math.round(currentTime * fps));
+        video.currentTime = start + (frame + 0.5) / fps;
+        return;
       }
 
+      const targetTime = start + currentTime;
       if (
         Math.abs(video.currentTime - targetTime) >
         THRESHOLDS.VIDEO_SYNC_TOLERANCE
@@ -432,7 +444,15 @@ export const SimpleVideosPlayer = ({
         video.currentTime = targetTime;
       }
     });
-  }, [externalSeekVersion, currentTime, videosInfo, videosReady, hiddenSet]);
+  }, [
+    externalSeekVersion,
+    currentTime,
+    videosInfo,
+    videosReady,
+    hiddenSet,
+    isPlaying,
+    fps,
+  ]);
 
   return (
     <>

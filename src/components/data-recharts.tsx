@@ -21,12 +21,17 @@ import {
 
 type ChartRow = Record<string, number | Record<string, number>>;
 
+/** A vertical line at `time`, e.g. an annotated target frame. */
+export type ChartMarker = { time: number; label: string; color: string };
+
 type DataGraphProps = {
   data: ChartRow[][];
   onChartsReady?: () => void;
+  markers?: ChartMarker[];
 };
 
 const SERIES_NAME_DELIMITER = " | ";
+const NO_MARKERS: ChartMarker[] = [];
 
 const CHART_COLORS = [
   "#f97316",
@@ -104,6 +109,46 @@ function PlaybackCursor({ start, end }: { start: number; end: number }) {
   );
 }
 
+function ChartMarkers({
+  markers,
+  start,
+  end,
+}: {
+  markers: ChartMarker[];
+  start: number;
+  end: number;
+}) {
+  if (end <= start || !markers.length) return null;
+  const left = CHART_MARGIN.left + Y_AXIS_WIDTH;
+  return (
+    <>
+      {markers.map((m) => {
+        const fraction = (m.time - start) / (end - start);
+        if (fraction < 0 || fraction > 1) return null;
+        return (
+          <div
+            key={`${m.time}-${m.label}`}
+            className="pointer-events-none absolute border-l-2 border-dashed"
+            style={{
+              top: CHART_MARGIN.top,
+              bottom: CHART_MARGIN.bottom + X_AXIS_HEIGHT,
+              left: `calc(${left}px + (100% - ${left + CHART_MARGIN.right}px) * ${fraction})`,
+              borderColor: m.color,
+            }}
+          >
+            <span
+              className="absolute top-0 left-1 whitespace-nowrap rounded px-1 text-[10px] font-medium text-white"
+              style={{ background: m.color }}
+            >
+              {m.label}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function mergeGroups(data: ChartRow[][]): ChartRow[] {
   if (data.length <= 1) return data[0] ?? [];
   const maxLen = Math.max(...data.map((g) => g.length));
@@ -127,7 +172,7 @@ function mergeGroups(data: ChartRow[][]): ChartRow[] {
 }
 
 export const DataRecharts = React.memo(
-  ({ data, onChartsReady }: DataGraphProps) => {
+  ({ data, onChartsReady, markers = NO_MARKERS }: DataGraphProps) => {
     const [hoverStore] = useState(createHoverStore);
     const [expanded, setExpanded] = useState(true);
 
@@ -183,11 +228,21 @@ export const DataRecharts = React.memo(
         )}
 
         {expanded ? (
-          <SingleDataGraph data={combinedData} hoverStore={hoverStore} tall />
+          <SingleDataGraph
+            data={combinedData}
+            hoverStore={hoverStore}
+            markers={markers}
+            tall
+          />
         ) : (
           <div className="grid md:grid-cols-2 grid-cols-1 gap-4">
             {data.map((group, idx) => (
-              <SingleDataGraph key={idx} data={group} hoverStore={hoverStore} />
+              <SingleDataGraph
+                key={idx}
+                data={group}
+                hoverStore={hoverStore}
+                markers={markers}
+              />
             ))}
           </div>
         )}
@@ -340,10 +395,12 @@ const SingleDataGraph = React.memo(
   ({
     data,
     hoverStore,
+    markers,
     tall,
   }: {
     data: ChartRow[];
     hoverStore: HoverStore;
+    markers: ChartMarker[];
     tall?: boolean;
   }) => {
     const { seek } = useTimeControls();
@@ -558,6 +615,11 @@ const SingleDataGraph = React.memo(
               })}
             </LineChart>
           </ResponsiveContainer>
+          <ChartMarkers
+            markers={markers}
+            start={chartData.at(0)?.timestamp ?? 0}
+            end={chartData.at(-1)?.timestamp ?? 0}
+          />
           <PlaybackCursor
             start={chartData.at(0)?.timestamp ?? 0}
             end={chartData.at(-1)?.timestamp ?? 0}

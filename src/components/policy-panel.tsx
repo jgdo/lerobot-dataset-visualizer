@@ -21,6 +21,8 @@ type PolicyInfo = {
   /** Renames the policy was trained with (dataset key -> policy key). */
   default_remap: Record<string, string>;
   dataset_observation_keys: string[];
+  /** A training job currently has the GPU (see the training page). */
+  training_active?: boolean;
 };
 
 /** Dataset observation key -> policy input key; "" leaves the stream out. */
@@ -63,6 +65,13 @@ export type PolicyResult = {
   recorded: number[][];
   predicted: number[][];
   per_joint: JointStats[];
+  /** target_reach: pose at the tagged frame for frames 0..frame, else null. */
+  target?: {
+    tag: string;
+    key: string;
+    frame: number | null;
+    pose: (number[] | null)[];
+  } | null;
 };
 
 type Job = {
@@ -74,7 +83,7 @@ type Job = {
   result?: PolicyResult;
 };
 
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
+export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, { cache: "no-store", ...init });
@@ -229,12 +238,19 @@ export function withPredictedActions(
     const i = rowCount > 1 ? Math.round((rowIndex * last) / (rowCount - 1)) : 0;
     // Flat "predicted | <joint>" keys, like the recorded series, so merging
     // the charts in the combined view keeps every joint.
-    return Object.fromEntries(
+    const row = Object.fromEntries(
       names.map((name) => [
         `predicted${SERIES_NAME_DELIMITER}${name}`,
         result.predicted[i][result.names.indexOf(name)],
       ]),
     );
+    // target_reach: the target pose the prediction is compared with.
+    const target = result.target?.pose[i];
+    if (target)
+      for (const name of names)
+        row[`target${SERIES_NAME_DELIMITER}${name}`] =
+          target[result.names.indexOf(name)];
+    return row;
   };
 
   const placed = new Set<string>();
@@ -419,7 +435,9 @@ export function PolicyPanel({
     <div className="panel space-y-4 p-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-fg">
-          Trained policy vs. recorded actions
+          {result?.target
+            ? "Trained policy vs. target pose"
+            : "Trained policy vs. recorded actions"}
         </h3>
         <button className="btn" onClick={() => setOpen(false)}>
           Hide
@@ -459,6 +477,12 @@ export function PolicyPanel({
           </p>
         )}
         {infoError && <p className="text-xs text-flag-fg">{infoError}</p>}
+        {info?.training_active && (
+          <p className="text-xs text-accent-fg">
+            A training is running on the GPU. Evaluation still works but is
+            slower, and large policies may run out of GPU memory.
+          </p>
+        )}
       </div>
 
       {info && info.dataset_observation_keys.length > 0 && (
@@ -486,9 +510,11 @@ export function PolicyPanel({
           />
         </div>
         <p className="max-w-md flex-1 text-xs text-fg-faint">
-          {actionsPerChunk === 1 || !kValid
-            ? "The policy runs on every frame of the episode and its first predicted action is compared with the recorded action."
-            : `The policy runs on every ${actionsPerChunk}th frame of the episode and the first ${actionsPerChunk} predicted actions of each chunk are compared with the recorded actions.`}
+          {info?.type === "target_reach"
+            ? "The policy runs on every frame of the episode. Its prediction is compared with the pose at the episode's target frame, for the frames up to that frame."
+            : actionsPerChunk === 1 || !kValid
+              ? "The policy runs on every frame of the episode and its first predicted action is compared with the recorded action."
+              : `The policy runs on every ${actionsPerChunk}th frame of the episode and the first ${actionsPerChunk} predicted actions of each chunk are compared with the recorded actions.`}
         </p>
         {running ? (
           <button className="btn" onClick={cancel}>
@@ -545,13 +571,34 @@ export function PolicyPanel({
 
       {result && (
         <div className="space-y-4">
-          <p className="text-xs text-fg-muted">
-            {result.policy_type} · {result.num_policy_calls} policy calls ·{" "}
-            {result.actions_per_chunk} action
-            {result.actions_per_chunk === 1 ? "" : "s"} per chunk · predicted
-            minus recorded action · predicted actions are shown in the chart
-            above
-          </p>
+          {result.target ? (
+            <p className="text-xs text-fg-muted">
+              {result.policy_type} · {result.num_policy_calls} policy calls ·
+              tag <span className="font-mono">{result.target.tag}</span>{" "}
+              {result.target.frame == null ? (
+                <span className="text-flag-fg">
+                  · this episode has no target with this tag, so there is
+                  nothing to compare with
+                </span>
+              ) : (
+                <>
+                  at frame {result.target.frame} · predicted minus{" "}
+                  <span className="font-mono">{result.target.key}</span> at the
+                  target frame, over frames 0…{result.target.frame} (as in
+                  training) · predicted and target poses are shown in the chart
+                  above
+                </>
+              )}
+            </p>
+          ) : (
+            <p className="text-xs text-fg-muted">
+              {result.policy_type} · {result.num_policy_calls} policy calls ·{" "}
+              {result.actions_per_chunk} action
+              {result.actions_per_chunk === 1 ? "" : "s"} per chunk · predicted
+              minus recorded action · predicted actions are shown in the chart
+              above
+            </p>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-xs tabular">
               <thead>

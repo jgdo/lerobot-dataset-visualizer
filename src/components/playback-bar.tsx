@@ -8,6 +8,8 @@ import {
   FaUndoAlt,
   FaArrowDown,
   FaArrowUp,
+  FaArrowLeft,
+  FaArrowRight,
 } from "react-icons/fa";
 
 const PlaybackBar: React.FC = () => {
@@ -112,6 +114,13 @@ const PlaybackBar: React.FC = () => {
             <FaArrowDown size={10} />
           </span>
           <span>prev/next episode</span>
+        </p>
+        <p className="inline-flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-0.5 text-fg-soft">
+            <FaArrowLeft size={10} />
+            <FaArrowRight size={10} />
+          </span>
+          <span>prev/next frame</span>
         </p>
       </div>
     </div>
