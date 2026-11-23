@@ -219,7 +219,7 @@ const TYPE_FIELDS: Record<string, Field[]> = {
     {
       key: "depth_augmentation",
       label: "Depth augmentation",
-      help: "Depth noise, random holes and pixel dropout",
+      help: "Uniform depth noise (±0.5 mm), random holes and pixel dropout",
       kind: "bool",
     },
     {

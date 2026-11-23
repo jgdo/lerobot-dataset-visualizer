@@ -123,8 +123,8 @@ def augmentation_args(params: dict, policy_type: str) -> list[str]:
             *(f"--policy.{key}={'true' if params.get(key, legacy) else 'false'}" for key in AUGMENT_PARAMS),
         ]
     if policy_type == "doorhandle":
-        # The plugin augments on the GPU after resizing; position = its homography, applied
-        # identically to RGB and depth.
+        # The plugin augments on the GPU after resizing; position = its rigid rotation + shift
+        # (no zoom / perspective, so depth values stay consistent), applied to RGB and depth alike.
         on = lambda key: "true" if params.get(key, legacy) else "false"  # noqa: E731
         return [
             "--dataset.image_transforms.enable=false",

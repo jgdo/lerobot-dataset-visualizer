@@ -190,7 +190,8 @@ example `arips/pregrasp_gazebo_pull_right_30`.
 - It predicts one pre-grasp joint pose with a per-joint uncertainty, so the
   action-chunk fields are hidden.
 - Color and position augmentation map to the plugin's GPU augmentation; the
-  position switch turns on its homography, applied to RGB and depth alike.
+  position switch turns on its rotation (±5°) and shift (±5%), applied to RGB
+  and depth alike (no zoom or perspective, so depth values stay consistent).
   The form also has **Depth augmentation** and **Joint state noise**.
 - **bfloat16 training** (on by default) runs the forward pass under bf16
   autocast (`--policy.dtype=bfloat16`), 1.6–2.3× faster; weights, head and
