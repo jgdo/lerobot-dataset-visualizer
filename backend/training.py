@@ -62,6 +62,9 @@ POLICY_TYPES = {
     # Plugin policy (lerobot_policy_target_reach): predicts the pose at the
     # frame annotated with ``target_tag`` (see target_annotations.py).
     "target_reach": {"label": "Target reach", "base": None, "cameras": None},
+    # Plugin policy (lerobot_policy_doorhandle): one RGB + one depth image and the
+    # joint state -> door handle pre-grasp joint pose with per-joint uncertainty.
+    "doorhandle": {"label": "Door handle (RGB-D)", "base": None, "cameras": None},
 }
 
 # Parameters the UI may set, as lerobot-train flags. Values are validated and
@@ -82,7 +85,13 @@ BOOL_PARAMS = {
     "train_expert_only": "--policy.train_expert_only",
     "gradient_checkpointing": "--policy.gradient_checkpointing",
     "use_vae": "--policy.use_vae",
+    "depth_augmentation": "--policy.depth_augmentation",
+    "state_noise": "--policy.state_noise",
+    "freeze_backbone": "--policy.freeze_backbone",
+    "freeze_backbone_stem": "--policy.freeze_backbone_stem",
 }
+# Checkbox for --policy.dtype (doorhandle: bf16 autocast in the forward pass).
+BF16_PARAM = "bf16"
 CHOICE_PARAMS = {
     "dtype": ("--policy.dtype", ("bfloat16", "float32")),
     "target_key": ("--policy.target_key", ("observation.state", "action")),
@@ -113,6 +122,15 @@ def augmentation_args(params: dict, policy_type: str) -> list[str]:
             "--dataset.image_transforms.enable=false",
             *(f"--policy.{key}={'true' if params.get(key, legacy) else 'false'}" for key in AUGMENT_PARAMS),
         ]
+    if policy_type == "doorhandle":
+        # The plugin augments on the GPU after resizing; position = its homography, applied
+        # identically to RGB and depth.
+        on = lambda key: "true" if params.get(key, legacy) else "false"  # noqa: E731
+        return [
+            "--dataset.image_transforms.enable=false",
+            f"--policy.color_augmentation={on('color_augmentation')}",
+            f"--policy.geometric_augmentation={on('position_augmentation')}",
+        ]
     tfs: dict = {}
     for key, group in AUGMENT_PARAMS.items():
         if params.get(key, legacy):
@@ -122,8 +140,9 @@ def augmentation_args(params: dict, policy_type: str) -> list[str]:
     return ["--dataset.image_transforms.enable=true", f"--dataset.image_transforms.tfs={json.dumps(tfs)}"]
 
 
-# target_reach predicts a single pose, so it has no action chunk.
+# target_reach and doorhandle predict a single pose, so they have no action chunk.
 CHUNK_PARAMS = {"chunk_size", "n_action_steps"}
+SINGLE_POSE_TYPES = {"target_reach", "doorhandle"}
 
 
 def build_args(job: dict, dataset_dir: Path, output_dir: Path) -> list[str]:
@@ -153,6 +172,8 @@ def build_args(job: dict, dataset_dir: Path, output_dir: Path) -> list[str]:
     for key, (flag, _) in CHOICE_PARAMS.items():
         if key in params:
             args.append(f"{flag}={params[key]}")
+    if BF16_PARAM in params:
+        args.append(f"--policy.dtype={'bfloat16' if params[BF16_PARAM] else 'float32'}")
     args += augmentation_args(params, job["policy_type"])
     if job.get("target_tag"):
         args.append(f"--policy.annotation_path={job['annotation_path']}")
@@ -168,8 +189,9 @@ def clean_params(policy_type: str, raw: dict) -> dict:
     allowed = {"act": {"use_vae"}, "smolvla": {"freeze_vision_encoder", "train_expert_only"}}
     allowed["pi0_fast"] = {"gradient_checkpointing", "dtype"}
     allowed["target_reach"] = {"target_key"}
+    allowed["doorhandle"] = {"depth_augmentation", "state_noise", "freeze_backbone", "freeze_backbone_stem", BF16_PARAM}
     common = set(INT_PARAMS) | set(FLOAT_PARAMS) | set(AUGMENT_PARAMS)
-    if policy_type == "target_reach":
+    if policy_type in SINGLE_POSE_TYPES:
         common -= CHUNK_PARAMS
     out: dict = {}
     for key, value in raw.items():
@@ -187,12 +209,14 @@ def clean_params(policy_type: str, raw: dict) -> dict:
             if not v > 0:
                 raise ValueError(f"{key} must be positive")
             out[key] = v
-        elif key in BOOL_PARAMS or key in AUGMENT_PARAMS:
+        elif key in BOOL_PARAMS or key in AUGMENT_PARAMS or key == BF16_PARAM:
             out[key] = bool(value)
         else:
             if value not in CHOICE_PARAMS[key][1]:
                 raise ValueError(f"{key} must be one of {CHOICE_PARAMS[key][1]}")
             out[key] = value
+    if out.get("freeze_backbone_stem") and not out.get("freeze_backbone"):
+        raise ValueError("freezing the stem needs freeze_backbone")
     if "steps" not in out:
         raise ValueError("steps is required")
     if out.get("n_action_steps", 0) > out.get("chunk_size", 10**9):

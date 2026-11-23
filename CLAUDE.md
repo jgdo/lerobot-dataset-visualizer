@@ -119,6 +119,17 @@ echo $? > <id>.exit'` in its own process group (survives server restarts,
     `progress.note`.
   - The plugin's tests: `cd ../lerobot_policy_target_reach && uv run --no-project --python ../venv/bin/python --with pytest python -m pytest -q tests`.
 
+- `doorhandle` (plugin package `lerobot_policy_doorhandle` in
+  `colcon_ws/src/arips_ros2`, installed editable like target_reach): RGB + depth +
+  6 joint states → one 5-joint pose. It is in `SINGLE_POSE_TYPES` (no chunk
+  params). `color_augmentation` / `position_augmentation` become
+  `--policy.color_augmentation` / `--policy.geometric_augmentation`; it also
+  allows `depth_augmentation`, `state_noise`, `freeze_backbone` and
+  `freeze_backbone_stem`, plus the checkbox `bf16` (`BF16_PARAM`, default on in the UI)
+  which becomes `--policy.dtype=bfloat16|float32` (the stem one needs `freeze_backbone`: a UI `Field`
+  with `requires` is disabled and sent as false, and `clean_params` rejects it). Test dataset:
+  `arips/pregrasp_gazebo_pull_right_30` (copied into the test copy).
+
 ## Target annotations (`backend/target_annotations.py`)
 
 - File: `<root>/annotations/<org>/<dataset>/targets.json`, containing

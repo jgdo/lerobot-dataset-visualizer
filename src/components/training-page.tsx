@@ -89,6 +89,8 @@ type Field = {
   help: string;
   kind: "int" | "float" | "bool" | "choice";
   choices?: string[];
+  // A bool field that only applies while this other bool field is on.
+  requires?: string;
 };
 
 const COMMON_FIELDS: Field[] = [
@@ -207,16 +209,49 @@ const TYPE_FIELDS: Record<string, Field[]> = {
       choices: ["observation.state", "action"],
     },
   ],
+  doorhandle: [
+    {
+      key: "bf16",
+      label: "bfloat16 training",
+      help: "Forward pass under bf16 autocast (weights, head and loss stay fp32); 1.6–2.3× faster",
+      kind: "bool",
+    },
+    {
+      key: "depth_augmentation",
+      label: "Depth augmentation",
+      help: "Depth noise, random holes and pixel dropout",
+      kind: "bool",
+    },
+    {
+      key: "state_noise",
+      label: "Joint state noise",
+      help: "Gaussian noise on the current joints (5 mm slider, 1° rotary joints)",
+      kind: "bool",
+    },
+    {
+      key: "freeze_backbone",
+      label: "Freeze backbone",
+      help: "No gradients to the pretrained backbone; FPN, keypoint heads and MLP still train",
+      kind: "bool",
+    },
+    {
+      key: "freeze_backbone_stem",
+      label: "Freeze backbone stem too",
+      help: "Also freeze the 4-channel input conv (its depth filter is not pretrained)",
+      kind: "bool",
+      requires: "freeze_backbone",
+    },
+  ],
 };
 
-// target_reach predicts a single pose, so it has no action chunk.
+// target_reach and doorhandle predict a single pose, so they have no action chunk.
 const CHUNK_KEYS = new Set(["chunk_size", "n_action_steps"]);
+const SINGLE_POSE_TYPES = new Set(["target_reach", "doorhandle"]);
 
 function fieldsFor(type: string) {
-  const common =
-    type === "target_reach"
-      ? COMMON_FIELDS.filter((f) => !CHUNK_KEYS.has(f.key))
-      : COMMON_FIELDS;
+  const common = SINGLE_POSE_TYPES.has(type)
+    ? COMMON_FIELDS.filter((f) => !CHUNK_KEYS.has(f.key))
+    : COMMON_FIELDS;
   return [...common, ...(TYPE_FIELDS[type] ?? [])];
 }
 
@@ -278,6 +313,23 @@ const DEFAULTS: Record<string, ParamValues> = {
     color_augmentation: true,
     position_augmentation: true,
     target_key: "observation.state",
+  },
+  // Values from the plugin's README (RTX 3090: ~6 steps/s at batch 8).
+  doorhandle: {
+    steps: "30000",
+    batch_size: "32",
+    save_freq: "5000",
+    log_freq: "200",
+    optimizer_lr: "",
+    num_workers: "8",
+    seed: "1000",
+    color_augmentation: true,
+    position_augmentation: true,
+    depth_augmentation: true,
+    state_noise: true,
+    freeze_backbone: false,
+    freeze_backbone_stem: false,
+    bf16: true,
   },
 };
 
@@ -660,7 +712,12 @@ function NewTrainingForm({
         policy_type: type,
         repo_id: repoId,
         name: name.trim(),
-        params: Object.fromEntries(fields.map((f) => [f.key, params[f.key]])),
+        params: Object.fromEntries(
+          fields.map((f) => [
+            f.key,
+            f.requires && !params[f.requires] ? false : params[f.key],
+          ]),
+        ),
         rename_map: Object.fromEntries(
           Object.entries(cameraMap).filter(([k, v]) => v && v !== k),
         ),
@@ -791,6 +848,7 @@ function NewTrainingForm({
             key={f.key}
             field={f}
             value={params[f.key]}
+            disabled={!!f.requires && !params[f.requires]}
             onChange={(v) => setParams((p) => ({ ...p, [f.key]: v }))}
           />
         ))}
@@ -859,22 +917,25 @@ function NewTrainingForm({
 function ParamInput({
   field,
   value,
+  disabled = false,
   onChange,
 }: {
   field: Field;
   value: string | boolean | undefined;
+  disabled?: boolean;
   onChange: (v: string | boolean) => void;
 }) {
   if (field.kind === "bool") {
     return (
       <label
-        className="flex items-center gap-2 self-end pb-1.5 text-xs text-fg-soft"
+        className={`flex items-center gap-2 self-end pb-1.5 text-xs text-fg-soft ${disabled ? "opacity-50" : ""}`}
         title={field.help}
       >
         <input
           type="checkbox"
           className="accent-accent"
-          checked={!!value}
+          disabled={disabled}
+          checked={!!value && !disabled}
           onChange={(e) => onChange(e.target.checked)}
         />
         {field.label}

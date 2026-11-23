@@ -181,6 +181,28 @@ plugin policy from `../lerobot_policy_target_reach`. Install it into the
   apply.
 - The default run name includes the tag.
 
+**Door handle policy.** **Door handle (RGB-D)** trains the `doorhandle` plugin
+policy (package `lerobot_policy_doorhandle` in the `arips_ros2` repository,
+installed the same way). It needs a dataset with exactly one RGB camera, one
+depth camera, a 6-value `observation.state` and a 5-value `action`, for
+example `arips/pregrasp_gazebo_pull_right_30`.
+
+- It predicts one pre-grasp joint pose with a per-joint uncertainty, so the
+  action-chunk fields are hidden.
+- Color and position augmentation map to the plugin's GPU augmentation; the
+  position switch turns on its homography, applied to RGB and depth alike.
+  The form also has **Depth augmentation** and **Joint state noise**.
+- **bfloat16 training** (on by default) runs the forward pass under bf16
+  autocast (`--policy.dtype=bfloat16`), 1.6–2.3× faster; weights, head and
+  loss stay fp32. Untick it for `float32`.
+- **Freeze backbone** stops training the pretrained backbone (FPN, keypoint
+  heads and MLP still train; about 1.3 M of 29 M parameters with
+  ConvNeXt-Tiny). **Freeze backbone stem too** also freezes the 4-channel
+  input conv; it is only available while **Freeze backbone** is on.
+- The defaults follow the plugin's README (30k steps, batch 32, 8 workers).
+- The first training downloads the ImageNet ConvNeXt-Tiny weights (about
+  110 MB) into the torch hub cache.
+
 ## Annotations backend (optional)
 
 The Annotations tab edits LeRobot v3.1 language atoms — `language_persistent`
